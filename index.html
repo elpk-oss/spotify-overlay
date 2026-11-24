@@ -509,7 +509,7 @@
     document.body.classList.remove("idle-cursor");
     clearTimeout(hideTimer);
     hideTimer = setTimeout(() => {
-      if $("setup").classList.contains("show") return;
+      if ($("setup").classList.contains("show")) return;
       document.body.classList.remove("show-ui");
       document.body.classList.add("idle-cursor");
     }, 3000);
