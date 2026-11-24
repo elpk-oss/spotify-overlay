@@ -85,6 +85,8 @@
   #inDev option { color: #000; }
   .lab { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #ffffffa0; }
 
+  body.viz-off #viz, body.viz-off #ring, body.viz-off #scope { display: none; }
+
   /* ---------- Estado vacío ---------- */
   #empty {
     position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
@@ -192,6 +194,7 @@
   <label class="lab">Volumen <input type="range" id="vol" min="0" max="100" value="80"></label>
   <label class="lab">Sensibilidad <input type="range" id="sens" min="60" max="250" value="130"></label>
   <button class="btn ghost" id="btnPop">Ventana aparte</button>
+  <button class="btn ghost" id="btnViz">Ondas: real</button>
   <button class="btn ghost" id="btnLock">Ocultar controles</button>
   <button class="btn ghost" id="btnFs">Pantalla completa (F)</button>
   <button class="btn ghost" id="btnOut">Cerrar sesión</button>
@@ -498,6 +501,7 @@
   const bars = new Float32Array(BARS);
   let W = 0, H = 0, dpr = 1, bass = 0, lastT = 0, idleMs = 0, hotMs = 0, modeTick = 0, loAvg = 0, lastBeat = 0, kick = 0, peakAll = 0.1;
   const waves = [];
+  let vizMode = store.get("viz") || "real";
 
   function resize() {
     dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -509,6 +513,17 @@
 
   function targets(t) {
     const out = new Float32Array(BARS);
+    if (vizMode === "off") return out;
+    if (vizMode === "fake") {
+      if (!current.playing) return out;
+      const beat = (t / 1000 * 100 / 60) % 1, kk = Math.exp(-beat * 5);
+      if (beat < 0.04 && t - lastBeat > 300) { lastBeat = t; kick = 0.8; waves.push({ p: 0, s: 0.8 }); }
+      for (let i = 0; i < BARS; i++) {
+        const x = i / BARS;
+        out[i] = Math.min(1, 0.06 + kk * 0.6 * Math.pow(1 - x, 1.6) + (0.5 + 0.5 * Math.sin(t / 380 + i * 0.45) * Math.sin(t / 900 + i * 0.13)) * 0.32 * (x + 0.2));
+      }
+      return out;
+    }
     if (!audioLive || !analyser) return out;
     analyser.getByteFrequencyData(freqData);
     const sens = $("sens").value / 100, usable = Math.floor(freqData.length * 0.55);
@@ -583,7 +598,7 @@
     const tick = Math.floor(t / 400);
     if (tick !== modeTick) {
       modeTick = tick;
-      $("mode").textContent = !audioLive ? "Sin captura de audio: no reacciona"
+      $("mode").textContent = vizMode !== "real" ? "Ondas: " + (vizMode === "fake" ? "falsas (simuladas)" : "apagadas") : !audioLive ? "Sin captura de audio: no reacciona"
         : (idleMs > 3000 && current.playing) ? "⚠ Captura en silencio (" + capInfo + "): prueba otra fuente"
         : "Audio real ✓ " + capInfo + " · nivel " + Math.round(lvl * 100) + "%";
     }
@@ -645,6 +660,8 @@
   }
   $("btnFs").onclick = toggleFs;
   const syncUI = () => {
+    $("btnViz").textContent = "Ondas: " + (vizMode === "real" ? "real" : vizMode === "fake" ? "falsas" : "apagadas");
+    document.body.classList.toggle("viz-off", vizMode === "off");
     $("btnLock").textContent = locked ? "Desbloquear controles" : "Ocultar controles";
     $("btnPlay").textContent = "Sonido en esta pestaña: " + (playHere ? "sí" : "no");
   };
@@ -654,6 +671,7 @@
   };
   $("btnPlay").onclick = () => { playHere = !playHere; store.set("playhere", playHere ? "1" : "0"); applyOut(); syncUI(); };
   $("vol").oninput = applyOut;
+  $("btnViz").onclick = () => { vizMode = vizMode === "real" ? "fake" : vizMode === "fake" ? "off" : "real"; store.set("viz", vizMode); syncUI(); };
   $("btnPop").onclick = () => window.open(location.href.split("#")[0], "overlay_win", "popup=yes,width=1280,height=720");
   syncUI();
   $("btnOut").onclick = logout;
