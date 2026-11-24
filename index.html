@@ -372,7 +372,7 @@
       current.duration = Number(tk.duration) || 0;
       const box = $("tags"); box.textContent = "";
       ((tk.toptags && tk.toptags.tag) || []).slice(0, 4).forEach(x => { const sp = document.createElement("span"); sp.textContent = x.name; box.appendChild(sp); });
-      $("stats").textContent = [tk.userloved === "1" ? "♥ Favorita" : "", tk.userplaycount ? "Tus escuchas: " + n(tk.userplaycount) : "",
+      $("stats").textContent = [tk.userloved === "1" ? "♥ Favorita" : "", tk.userplaycount ? "Veces oida: " + n(tk.userplaycount) : "",
         tk.listeners ? "Oyentes: " + n(tk.listeners) : "", tk.playcount ? "Reproducciones: " + n(tk.playcount) : ""].filter(Boolean).join(" · ");
       if (!$("album").textContent && tk.album && tk.album.title) $("album").textContent = tk.album.title;
     } catch (e) { /* sin info extra */ }
