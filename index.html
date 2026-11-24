@@ -81,6 +81,8 @@
   #prev { color: #ffffff60; }
   #clock { position: fixed; top: 18px; right: 24px; font-size: 15px; color: #ffffff80; font-variant-numeric: tabular-nums; z-index: 2; }
   #vol, #sens { width: 90px; accent-color: var(--accent); }
+  #inDev { font: inherit; font-size: 13px; color: #fff; background: #ffffff14; border: 1px solid #ffffff1f; border-radius: 999px; padding: 8px 12px; max-width: 230px; }
+  #inDev option { color: #000; }
   .lab { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #ffffffa0; }
 
   /* ---------- Estado vacío ---------- */
@@ -182,8 +184,10 @@
 </div>
 
 <div id="controls">
-  <button class="btn ghost" id="btnSys">Capturar audio (pestaña o pantalla)</button>
-  <button class="btn ghost" id="btnMic">Usar micrófono / mezcla estéreo</button>
+  <button class="btn ghost" id="btnSys">Capturar pantalla (Spotify app)</button>
+  <button class="btn ghost" id="btnTab">Capturar pestaña (Spotify Web)</button>
+  <button class="btn ghost" id="btnMic">Entrada de audio (sin aviso de Chrome)</button>
+  <select id="inDev" hidden aria-label="Entrada de audio"></select>
   <button class="btn ghost" id="btnPlay">Sonido en esta pestaña: no</button>
   <label class="lab">Volumen <input type="range" id="vol" min="0" max="100" value="80"></label>
   <label class="lab">Sensibilidad <input type="range" id="sens" min="60" max="250" value="130"></label>
@@ -375,7 +379,7 @@
       current.duration = Number(tk.duration) || 0;
       const box = $("tags"); box.textContent = "";
       ((tk.toptags && tk.toptags.tag) || []).slice(0, 4).forEach(x => { const sp = document.createElement("span"); sp.textContent = x.name; box.appendChild(sp); });
-      $("stats").textContent = [tk.userloved === "1" ? "♥ Favorita" : "", tk.userplaycount ? "Veces oida: " + n(tk.userplaycount) : "",
+      $("stats").textContent = [tk.userloved === "1" ? "♥ Favorita" : "", tk.userplaycount ? "Tus escuchas: " + n(tk.userplaycount) : "",
         tk.listeners ? "Oyentes: " + n(tk.listeners) : "", tk.playcount ? "Reproducciones: " + n(tk.playcount) : ""].filter(Boolean).join(" · ");
       if (!$("album").textContent && tk.album && tk.album.title) $("album").textContent = tk.album.title;
     } catch (e) { /* sin info extra */ }
@@ -424,7 +428,7 @@
   }
 
   /* =====================  Audio real (opcional)  ===================== */
-  let audioCtx = null, analyser = null, freqData = null, audioLive = false, activeStream = null, tdata = null, outGain = null, playHere = store.get("playhere") === "1";
+  let audioCtx = null, analyser = null, freqData = null, audioLive = false, activeStream = null, keep = null, capInfo = "", tdata = null, outGain = null, playHere = store.get("playhere") === "1";
 
   function applyOut() {
     if (!outGain) return;
@@ -440,6 +444,8 @@
       return;
     }
     if (activeStream) activeStream.getTracks().forEach(t => t.stop());
+    keep = keep || new Audio(); keep.muted = true; keep.srcObject = stream; keep.play().catch(() => {});
+    capInfo = (stream.getAudioTracks()[0].label || "audio").slice(0, 30);
     stream.getVideoTracks().forEach(vt => vt.applyConstraints({ frameRate: 1 }).catch(() => {}));
     activeStream = stream;
     audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
@@ -457,18 +463,34 @@
     stream.getAudioTracks()[0].addEventListener("ended", () => { audioLive = false; $("mode").textContent = "Visualizador: simulado"; });
   }
 
-  $("btnSys").onclick = async () => {
+  async function grab(video, audio, label, extra) {
     try {
-      const s = await navigator.mediaDevices.getDisplayMedia({ video: true, selfBrowserSurface: "exclude", systemAudio: "include", audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, suppressLocalAudioPlayback: true } });
-      await useStream(s, "audio real (sistema)");
-    } catch (e) { /* cancelado */ }
-  };
-  $("btnMic").onclick = async () => {
+      const s = await navigator.mediaDevices.getDisplayMedia(Object.assign({ video, audio }, extra || {}));
+      await useStream(s, label);
+    } catch (e) { if (e && e.name !== "NotAllowedError") alert("No se pudo capturar: " + (e.message || e)); }
+  }
+  $("btnSys").onclick = () => grab({ displaySurface: "monitor" }, true, "pantalla");
+  $("btnTab").onclick = () => grab({ displaySurface: "browser" }, { suppressLocalAudioPlayback: true }, "pestaña", { selfBrowserSurface: "exclude" });
+  async function openInput(deviceId) {
     try {
-      const s = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
-      await useStream(s, "audio real (entrada)");
-    } catch (e) { alert("No se pudo acceder a la entrada de audio."); }
-  };
+      const a = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+      if (deviceId) a.deviceId = { exact: deviceId };
+      const s = await navigator.mediaDevices.getUserMedia({ audio: a });
+      await useStream(s, "entrada");
+      const sel = $("inDev"), cur = s.getAudioTracks()[0].getSettings().deviceId;
+      const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "audioinput");
+      sel.textContent = "";
+      devs.forEach(d => {
+        const o = document.createElement("option");
+        o.value = d.deviceId; o.textContent = d.label || "Entrada de audio";
+        if (d.deviceId === cur) o.selected = true;
+        sel.appendChild(o);
+      });
+      sel.hidden = false;
+    } catch (e) { alert("No se pudo abrir esa entrada de audio."); }
+  }
+  $("btnMic").onclick = () => openInput();
+  $("inDev").onchange = e => openInput(e.target.value);
 
   /* =====================  Visualizador  ===================== */
   const canvas = $("viz"), ctx = canvas.getContext("2d");
@@ -561,7 +583,9 @@
     const tick = Math.floor(t / 400);
     if (tick !== modeTick) {
       modeTick = tick;
-      $("mode").textContent = audioLive ? "Audio real ✓ nivel " + Math.round(lvl * 100) + "%" : "Sin captura de audio: no reacciona";
+      $("mode").textContent = !audioLive ? "Sin captura de audio: no reacciona"
+        : (idleMs > 3000 && current.playing) ? "⚠ Captura en silencio (" + capInfo + "): prueba otra fuente"
+        : "Audio real ✓ " + capInfo + " · nivel " + Math.round(lvl * 100) + "%";
     }
     // anillo alrededor de la portada
     const cw = $("coverWrap").clientWidth, rs = Math.round(cw * 1.4), ring = $("ring");
