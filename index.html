@@ -66,7 +66,7 @@
   #info.swap #album { animation-delay: .16s; }
   @keyframes textIn { from { opacity: 0; transform: translateX(-14px); } to { opacity: 1; transform: none; } }
 
-  #progress { margin-top: clamp(22px, 4vh, 48px); max-width: 520px; }
+  #progress { display: none; margin-top: clamp(22px, 4vh, 48px); max-width: 520px; }
   #bar { height: 5px; border-radius: 5px; background: #ffffff1f; overflow: hidden; }
   #fill { height: 100%; width: 0; background: var(--accent); border-radius: 5px; box-shadow: 0 0 14px var(--accent); }
   #times { display: flex; justify-content: space-between; margin-top: 8px; font-size: 13px; color: #ffffff70; font-variant-numeric: tabular-nums; }
@@ -129,7 +129,7 @@
 <div id="grain"></div>
 
 <main id="stage" class="hidden">
-  <div id="coverWrap"><img id="cover" alt="Portada del álbum" crossorigin="anonymous"></div>
+  <div id="coverWrap"><img id="cover" alt="Portada del álbum"></div>
   <div id="info">
     <h1 id="title"></h1>
     <p id="artist"></p>
@@ -148,17 +148,19 @@
 
 <div id="setup">
   <div class="panel">
-    <h1>Conectar con Spotify</h1>
-    <p>Solo se hace una vez. Los datos se quedan en tu navegador.</p>
+    <h1>Conectar con Last.fm</h1>
+    <p>Last.fm registra lo que escuchas en Spotify. No necesitas Premium.</p>
     <ol>
-      <li>Entra a <code>developer.spotify.com/dashboard</code> y crea una app.</li>
-      <li>En <b>Redirect URIs</b> agrega exactamente: <code id="redirectShow"></code></li>
-      <li>Marca <b>Web API</b>, guarda y copia el <b>Client ID</b>.</li>
+      <li>Crea tu cuenta en <code>last.fm</code> y en <b>Ajustes → Aplicaciones</b> conecta Spotify.</li>
+      <li>Crea una API key gratis en <code>last.fm/api/account/create</code>. El nombre y la descripción pueden ser cualquiera.</li>
+      <li>Pega aquí tu usuario y la API key.</li>
     </ol>
-    <label for="clientId">Client ID</label>
-    <input id="clientId" type="text" autocomplete="off" spellcheck="false" placeholder="Pega aquí tu Client ID">
+    <label for="lfUser">Usuario de Last.fm</label>
+    <input id="lfUser" type="text" autocomplete="off" spellcheck="false">
+    <label for="lfKey">API key</label>
+    <input id="lfKey" type="text" autocomplete="off" spellcheck="false">
     <p id="err"></p>
-    <button class="btn" id="connect">Conectar con Spotify</button>
+    <button class="btn" id="connect">Guardar y empezar</button>
   </div>
 </div>
 
@@ -192,82 +194,26 @@
     }
   });
 
-  /* =====================  Configuración y auth (PKCE)  ===================== */
-  const SCOPES = "user-read-currently-playing user-read-playback-state";
-  const REDIRECT = location.origin + location.pathname;
+  /* =====================  Configuración (Last.fm)  ===================== */
   const $ = id => document.getElementById(id);
   const store = {
     get(k) { try { return localStorage.getItem(k); } catch { return null; } },
     set(k, v) { try { localStorage.setItem(k, v); } catch {} },
     del(k) { try { localStorage.removeItem(k); } catch {} }
   };
+  let started = false;
+  $("lfUser").value = store.get("lf_user") || "";
+  $("lfKey").value = store.get("lf_key") || "";
 
-  $("redirectShow").textContent = REDIRECT;
-  $("clientId").value = store.get("so_client") || "";
-
-  const b64url = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-  const randomStr = n => b64url(crypto.getRandomValues(new Uint8Array(n)));
-
-  async function startLogin() {
-    if (location.protocol === "file:") {
-      $("err").textContent = "Abriste el archivo directo. Ejecuta un servidor local y entra por http://127.0.0.1:8888/spotify-overlay.html";
-      return;
-    }
-    const cid = $("clientId").value.trim();
-    if (!cid) { $("err").textContent = "Falta el Client ID."; return; }
-    if (!crypto.subtle) { $("err").textContent = "Abre esta página desde http://127.0.0.1 (no desde un archivo)."; return; }
-    store.set("so_client", cid);
-    const verifier = randomStr(64);
-    store.set("so_verifier", verifier);
-    const challenge = b64url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
-    const p = new URLSearchParams({
-      client_id: cid, response_type: "code", redirect_uri: REDIRECT,
-      scope: SCOPES, code_challenge_method: "S256", code_challenge: challenge
-    });
-    location.href = "https://accounts.spotify.com/authorize?" + p;
+  function saveAndStart() {
+    const u = $("lfUser").value.trim(), k = $("lfKey").value.trim();
+    if (!u || !k) { $("err").textContent = "Completa el usuario y la API key."; return; }
+    store.set("lf_user", u); store.set("lf_key", k);
+    $("err").textContent = "";
+    $("setup").classList.remove("show");
+    begin();
   }
-
-  async function tokenRequest(params) {
-    const r = await fetch("https://accounts.spotify.com/api/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ client_id: store.get("so_client"), ...params })
-    });
-    if (!r.ok) throw new Error("token " + r.status);
-    const j = await r.json();
-    store.set("so_access", j.access_token);
-    store.set("so_expires", String(Date.now() + (j.expires_in - 60) * 1000));
-    if (j.refresh_token) store.set("so_refresh", j.refresh_token);
-  }
-
-  async function getToken() {
-    if (Number(store.get("so_expires") || 0) > Date.now() && store.get("so_access")) return store.get("so_access");
-    const rt = store.get("so_refresh");
-    if (!rt) throw new Error("sin sesión");
-    await tokenRequest({ grant_type: "refresh_token", refresh_token: rt });
-    return store.get("so_access");
-  }
-
-  function logout() {
-    ["so_access", "so_refresh", "so_expires", "so_verifier"].forEach(store.del);
-    location.href = REDIRECT;
-  }
-
-  async function handleRedirect() {
-    const q = new URLSearchParams(location.search);
-    if (q.get("error")) { history.replaceState({}, "", REDIRECT); $("setup").classList.add("show"); $("err").textContent = "Spotify rechazó el acceso: " + q.get("error"); return false; }
-    const code = q.get("code");
-    if (!code) return true;
-    history.replaceState({}, "", REDIRECT);
-    try {
-      await tokenRequest({ grant_type: "authorization_code", code, redirect_uri: REDIRECT, code_verifier: store.get("so_verifier") });
-      return true;
-    } catch (e) {
-      $("setup").classList.add("show");
-      $("err").textContent = "No se pudo conectar. Revisa el Client ID y el Redirect URI.";
-      return false;
-    }
-  }
+  function logout() { store.del("lf_user"); store.del("lf_key"); location.reload(); }
 
   /* =====================  Colores desde la portada  ===================== */
   const rgb2hsl = (r, g, b) => {
@@ -327,9 +273,8 @@
     bgFlip = !bgFlip;
   }
 
-  /* =====================  Spotify: canción actual  ===================== */
+  /* =====================  Last.fm: canción actual  ===================== */
   let current = { id: null, playing: false, progress: 0, duration: 1, stamp: 0 };
-  const fmt = ms => { const s = Math.max(0, Math.floor(ms / 1000)); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); };
 
   function showEmpty(title, sub) {
     $("stage").classList.add("hidden");
@@ -339,78 +284,98 @@
     current.playing = false;
   }
 
-  function showTrack(item, isPlaying, progress, typeLabel) {
-    const id = item.id || item.uri || item.name;
-    const isEpisode = item.type === "episode";
-    const images = isEpisode ? item.images : item.album.images;
-    const art = images && images[0] ? images[0].url : "";
-    const artist = isEpisode ? item.show.name : item.artists.map(a => a.name).join(", ");
-    const album = isEpisode ? "Podcast" : item.album.name;
+  function coverUrls(t) {
+    const imgs = (t.image || []).slice().reverse()
+      .map(i => i["#text"]).filter(u => u && !u.includes("2a96cbd8b46e442fc41c2b86b821562f"));
+    if (!imgs.length) return [];
+    const orig = imgs[0];
+    const big = orig.replace(/\/i\/u\/[^/]+\//, "/i/u/"); // intenta la versión grande
+    return big !== orig ? [big, orig] : [orig];
+  }
 
+  function loadCover(urls, id) {
+    const cover = $("cover");
+    const attempts = [];
+    urls.forEach(u => { attempts.push([u, true]); attempts.push([u, false]); });
+    let n = 0;
+    const next = () => {
+      if (id !== current.id) return;
+      if (n >= attempts.length) { cover.removeAttribute("src"); applyPalette(null, id); return; }
+      const [u, cors] = attempts[n++];
+      if (cors) cover.crossOrigin = "anonymous"; else cover.removeAttribute("crossorigin");
+      cover.onload = () => {
+        let p = null;
+        if (cors) { try { p = extractColors(cover); } catch (e) {} }
+        applyPalette(p, id);
+      };
+      cover.onerror = next;
+      cover.src = u;
+    };
+    next();
+  }
+
+  function showTrack(t) {
+    const artist = t.artist && (t.artist["#text"] || t.artist.name) || "";
+    const album = t.album && t.album["#text"] || "";
+    const id = t.name + "|" + artist;
     $("empty").classList.remove("show");
     $("stage").classList.remove("hidden");
-
     if (id !== current.id) {
       current.id = id;
-      $("title").textContent = item.name;
+      $("title").textContent = t.name;
       $("artist").textContent = artist;
       $("album").textContent = album;
-      document.title = item.name + " · " + artist;
+      document.title = t.name + " · " + artist;
       const cover = $("cover"), info = $("info");
       cover.classList.remove("swap"); info.classList.remove("swap");
       void cover.offsetWidth;
       cover.classList.add("swap"); info.classList.add("swap");
-      cover.onload = () => {
-        let p = null;
-        try { p = extractColors(cover); } catch (e) { /* sin CORS: usamos color por hash */ }
-        applyPalette(p, id);
-      };
-      cover.onerror = () => applyPalette(null, id);
-      if (art) cover.src = art; else { cover.removeAttribute("src"); applyPalette(null, id); }
+      const urls = coverUrls(t);
+      if (urls.length) loadCover(urls, id);
+      else { cover.removeAttribute("src"); applyPalette(null, id); }
     }
-    current.playing = isPlaying;
-    current.progress = progress || 0;
-    current.duration = item.duration_ms || 1;
-    current.stamp = performance.now();
+    current.playing = true;
   }
 
   async function poll() {
     let wait = 5000;
     try {
-      const t = await getToken();
-      const r = await fetch("https://api.spotify.com/v1/me/player/currently-playing?additional_types=episode", {
-        headers: { Authorization: "Bearer " + t }
-      });
-      $("dbg").textContent = "Spotify: " + r.status + " · " + new Date().toLocaleTimeString();
-      if (r.status === 204) {
-        current.id = null;
-        showEmpty("Nada sonando", "Dale play en Spotify y el overlay aparece solo.");
-      } else if (r.status === 429) {
-        wait = Math.max(15000, (Number(r.headers.get("Retry-After")) || 5) * 1000);
-        if (!current.id) showEmpty("Límite de Spotify alcanzado (429)", "Demasiadas consultas. Reintento en " + Math.round(wait / 1000) + " s.");
-      } else if (r.status === 401) {
-        store.del("so_expires");
-      } else if (r.status === 403) {
-        showEmpty("Spotify rechazó el acceso (403)", "En el dashboard de tu app: Settings → User management, agrega el email de tu cuenta de Spotify.");
-      } else if (!r.ok) {
-        showEmpty("Spotify respondió con error " + r.status, "Reintentando…");
-      } else if (r.ok) {
-        const j = await r.json();
-        if (j.currently_playing_type === "ad") {
-          current.id = null;
-          showEmpty("Publicidad", "Spotify está en pausa comercial.");
-        } else if (j.item) {
-          showTrack(j.item, j.is_playing, j.progress_ms);
+      const url = "https://ws.audioscrobbler.com/2.0/?method=user.getrecenttracks&limit=1&format=json"
+        + "&user=" + encodeURIComponent(store.get("lf_user"))
+        + "&api_key=" + encodeURIComponent(store.get("lf_key"))
+        + "&_=" + Date.now();
+      const r = await fetch(url);
+      const j = await r.json().catch(() => ({}));
+      $("dbg").textContent = "Last.fm: " + r.status + " · " + new Date().toLocaleTimeString();
+      if (j.error) {
+        const hint = j.error === 10 ? "La API key no es válida. Revísala (Cerrar sesión para cambiarla)."
+          : j.error === 6 ? "Ese usuario no existe en Last.fm."
+          : "Reintentando…";
+        showEmpty("Last.fm: " + (j.message || "error " + j.error), hint);
+        wait = j.error === 29 ? 30000 : 10000;
+      } else {
+        let t = j.recenttracks && j.recenttracks.track;
+        if (Array.isArray(t)) t = t[0];
+        if (t && t["@attr"] && t["@attr"].nowplaying === "true") {
+          showTrack(t);
         } else {
-          showEmpty("Nada sonando", "Dale play en Spotify y el overlay aparece solo.");
+          current.id = null;
+          showEmpty("Nada sonando", "Dale play en Spotify. Si no aparece, revisa que Spotify esté conectado a Last.fm y que no estés en sesión privada.");
         }
       }
     } catch (e) {
-      if (!store.get("so_refresh")) { $("setup").classList.add("show"); return; }
-      showEmpty("No se pudo consultar Spotify", String(e && e.message || e));
-      wait = 6000;
+      showEmpty("No se pudo consultar Last.fm", String(e && e.message || e));
+      wait = 8000;
     }
     setTimeout(poll, wait);
+  }
+
+  function begin() {
+    if (started) return;
+    started = true;
+    showEmpty("Conectado", "Esperando a que suene algo en Spotify…");
+    poll();
+    wake();
   }
 
   /* =====================  Audio real (opcional)  ===================== */
@@ -550,25 +515,13 @@
   }
   $("btnFs").onclick = toggleFs;
   $("btnOut").onclick = logout;
-  $("connect").onclick = startLogin;
-  $("clientId").addEventListener("keydown", e => { if (e.key === "Enter") startLogin(); });
+  $("connect").onclick = saveAndStart;
+  $("lfKey").addEventListener("keydown", e => { if (e.key === "Enter") saveAndStart(); });
 
   /* =====================  Arranque  ===================== */
-  (async () => {
-    applyPalette(null, "inicio");
-    if (location.protocol === "file:") {
-      $("setup").classList.add("show");
-      $("redirectShow").textContent = "http://127.0.0.1:8888/spotify-overlay.html";
-      $("err").textContent = "Estás abriendo el archivo directo. Ejecuta un servidor local (ver instrucciones) y entra por esa dirección.";
-      return;
-    }
-    const ok = await handleRedirect();
-    if (!ok) return;
-    if (!store.get("so_refresh") && !store.get("so_access")) { $("setup").classList.add("show"); return; }
-    showEmpty("Conectado", "Esperando a que suene algo en Spotify…");
-    poll();
-    wake();
-  })();
+  applyPalette(null, "inicio");
+  if (!store.get("lf_user") || !store.get("lf_key")) $("setup").classList.add("show");
+  else begin();
 })();
 </script>
 </body>
