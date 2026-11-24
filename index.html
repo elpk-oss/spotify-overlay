@@ -66,10 +66,20 @@
   #info.swap #album { animation-delay: .16s; }
   @keyframes textIn { from { opacity: 0; transform: translateX(-14px); } to { opacity: 1; transform: none; } }
 
-  #progress { display: none; margin-top: clamp(22px, 4vh, 48px); max-width: 520px; }
+  #progress { margin-top: clamp(22px, 4vh, 48px); max-width: 520px; }
   #bar { height: 5px; border-radius: 5px; background: #ffffff1f; overflow: hidden; }
   #fill { height: 100%; width: 0; background: var(--accent); border-radius: 5px; box-shadow: 0 0 14px var(--accent); }
   #times { display: flex; justify-content: space-between; margin-top: 8px; font-size: 13px; color: #ffffff70; font-variant-numeric: tabular-nums; }
+
+  #ring { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); pointer-events: none; }
+  #cover { position: relative; z-index: 1; }
+  #tags { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 1.4vh; }
+  #tags span { font-size: clamp(12px, 1vw, 16px); padding: 4px 11px; border-radius: 999px; border: 1px solid hsl(var(--accent-h) 60% 70% / .4); color: hsl(var(--accent-h) 70% 82%); }
+  #scope { display: block; width: 100%; max-width: 520px; height: 48px; margin-top: clamp(14px, 2.4vh, 28px); }
+  #stats, #prev { margin-top: 10px; font-size: clamp(12px, 1.05vw, 16px); color: #ffffff8c; }
+  #prev { color: #ffffff60; }
+  #clock { position: fixed; top: 18px; right: 24px; font-size: 15px; color: #ffffff80; font-variant-numeric: tabular-nums; z-index: 2; }
+  #vol { width: 90px; accent-color: var(--accent); }
 
   /* ---------- Estado vacío ---------- */
   #empty {
@@ -129,17 +139,22 @@
 <div id="grain"></div>
 
 <main id="stage" class="hidden">
-  <div id="coverWrap"><img id="cover" alt="Portada del álbum"></div>
+  <div id="coverWrap"><canvas id="ring"></canvas><img id="cover" alt="Portada del álbum"></div>
   <div id="info">
     <h1 id="title"></h1>
     <p id="artist"></p>
     <p id="album"></p>
+    <div id="tags"></div>
+    <canvas id="scope" width="520" height="48"></canvas>
     <div id="progress">
       <div id="bar"><div id="fill"></div></div>
       <div id="times"><span id="tNow">0:00</span><span id="tEnd">0:00</span></div>
+      <p id="stats"></p><p id="prev"></p>
     </div>
   </div>
 </main>
+
+<div id="clock"></div>
 
 <div id="empty">
   <h2 id="emptyTitle">Nada sonando</h2>
@@ -165,8 +180,12 @@
 </div>
 
 <div id="controls">
-  <button class="btn ghost" id="btnSys">Reaccionar al audio de la pantalla</button>
+  <button class="btn ghost" id="btnSys">Capturar audio (pestaña o pantalla)</button>
   <button class="btn ghost" id="btnMic">Usar micrófono / mezcla estéreo</button>
+  <button class="btn ghost" id="btnPlay">Sonido en esta pestaña: no</button>
+  <input type="range" id="vol" min="0" max="100" value="80" aria-label="Volumen de la pestaña">
+  <button class="btn ghost" id="btnPop">Ventana aparte</button>
+  <button class="btn ghost" id="btnLock">Ocultar controles</button>
   <button class="btn ghost" id="btnFs">Pantalla completa (F)</button>
   <button class="btn ghost" id="btnOut">Cerrar sesión</button>
   <span id="dbg" style="font-size:13px;color:#ffffff70"></span>
@@ -274,7 +293,9 @@
   }
 
   /* =====================  Last.fm: canción actual  ===================== */
-  let current = { id: null, playing: false, progress: 0, duration: 1, stamp: 0 };
+  let current = { id: null, playing: false, duration: 0, elapsed: 0, approx: true, paused: false };
+  let sessionCount = 0;
+  const fmt = ms => { const s = Math.max(0, Math.floor(ms / 1000)); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); };
 
   function showEmpty(title, sub) {
     $("stage").classList.add("hidden");
@@ -314,7 +335,7 @@
     next();
   }
 
-  function showTrack(t) {
+  function showTrack(t, prev) {
     const artist = t.artist && (t.artist["#text"] || t.artist.name) || "";
     const album = t.album && t.album["#text"] || "";
     const id = t.name + "|" + artist;
@@ -326,6 +347,10 @@
       $("artist").textContent = artist;
       $("album").textContent = album;
       document.title = t.name + " · " + artist;
+      current.elapsed = 0; current.duration = 0; current.approx = sessionCount === 0; sessionCount++;
+      $("tags").textContent = ""; $("stats").textContent = "";
+      $("prev").textContent = prev ? "Antes: " + prev.name + " — " + (prev.artist && prev.artist["#text"] || "") : "";
+      loadInfo(t.name, artist, id);
       const cover = $("cover"), info = $("info");
       cover.classList.remove("swap"); info.classList.remove("swap");
       void cover.offsetWidth;
@@ -337,10 +362,26 @@
     current.playing = true;
   }
 
+  async function loadInfo(name, artist, id) {
+    try {
+      const r = await fetch("https://ws.audioscrobbler.com/2.0/?method=track.getInfo&format=json&autocorrect=1&track=" + encodeURIComponent(name)
+        + "&artist=" + encodeURIComponent(artist) + "&username=" + encodeURIComponent(store.get("lf_user")) + "&api_key=" + encodeURIComponent(store.get("lf_key")));
+      const j = await r.json();
+      if (id !== current.id || !j.track) return;
+      const tk = j.track, n = v => Number(v).toLocaleString("es");
+      current.duration = Number(tk.duration) || 0;
+      const box = $("tags"); box.textContent = "";
+      ((tk.toptags && tk.toptags.tag) || []).slice(0, 4).forEach(x => { const sp = document.createElement("span"); sp.textContent = x.name; box.appendChild(sp); });
+      $("stats").textContent = [tk.userloved === "1" ? "♥ Favorita" : "", tk.userplaycount ? "Tus escuchas: " + n(tk.userplaycount) : "",
+        tk.listeners ? "Oyentes: " + n(tk.listeners) : "", tk.playcount ? "Reproducciones: " + n(tk.playcount) : ""].filter(Boolean).join(" · ");
+      if (!$("album").textContent && tk.album && tk.album.title) $("album").textContent = tk.album.title;
+    } catch (e) { /* sin info extra */ }
+  }
+
   async function poll() {
     let wait = 5000;
     try {
-      const url = "https://ws.audioscrobbler.com/2.0/?method=user.getrecenttracks&limit=1&format=json"
+      const url = "https://ws.audioscrobbler.com/2.0/?method=user.getrecenttracks&limit=2&format=json"
         + "&user=" + encodeURIComponent(store.get("lf_user"))
         + "&api_key=" + encodeURIComponent(store.get("lf_key"))
         + "&_=" + Date.now();
@@ -354,10 +395,11 @@
         showEmpty("Last.fm: " + (j.message || "error " + j.error), hint);
         wait = j.error === 29 ? 30000 : 10000;
       } else {
-        let t = j.recenttracks && j.recenttracks.track;
-        if (Array.isArray(t)) t = t[0];
+        let tr = j.recenttracks && j.recenttracks.track;
+        if (tr && !Array.isArray(tr)) tr = [tr];
+        const t = tr && tr[0];
         if (t && t["@attr"] && t["@attr"].nowplaying === "true") {
-          showTrack(t);
+          showTrack(t, tr[1]);
         } else {
           current.id = null;
           showEmpty("Nada sonando", "Dale play en Spotify. Si no aparece, revisa que Spotify esté conectado a Last.fm y que no estés en sesión privada.");
@@ -379,7 +421,14 @@
   }
 
   /* =====================  Audio real (opcional)  ===================== */
-  let audioCtx = null, analyser = null, freqData = null, audioLive = false, activeStream = null;
+  let audioCtx = null, analyser = null, freqData = null, audioLive = false, activeStream = null, tdata = null, outGain = null, playHere = store.get("playhere") === "1";
+
+  function applyOut() {
+    if (!outGain) return;
+    try { outGain.disconnect(); } catch (e) {}
+    if (playHere) outGain.connect(audioCtx.destination);
+    outGain.gain.value = $("vol").value / 100;
+  }
 
   async function useStream(stream, label) {
     if (!stream.getAudioTracks().length) {
@@ -396,7 +445,9 @@
     analyser = audioCtx.createAnalyser();
     analyser.fftSize = 2048;
     analyser.smoothingTimeConstant = 0.78;
-    src.connect(analyser); // no se conecta a destination: así no hay eco
+    src.connect(analyser);
+    outGain = audioCtx.createGain(); src.connect(outGain); applyOut();
+    tdata = new Uint8Array(analyser.fftSize);
     freqData = new Uint8Array(analyser.frequencyBinCount);
     audioLive = true;
     $("mode").textContent = "Visualizador: " + label;
@@ -405,7 +456,7 @@
 
   $("btnSys").onclick = async () => {
     try {
-      const s = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+      const s = await navigator.mediaDevices.getDisplayMedia({ video: true, selfBrowserSurface: "exclude", systemAudio: "include", audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, suppressLocalAudioPlayback: true } });
       await useStream(s, "audio real (sistema)");
     } catch (e) { /* cancelado */ }
   };
@@ -420,7 +471,7 @@
   const canvas = $("viz"), ctx = canvas.getContext("2d");
   const BARS = 72;
   const bars = new Float32Array(BARS);
-  let W = 0, H = 0, dpr = 1, bass = 0;
+  let W = 0, H = 0, dpr = 1, bass = 0, lastT = 0, idleMs = 0, hotMs = 0;
 
   function resize() {
     dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -458,7 +509,16 @@
   }
 
   function draw(t) {
+    const dt = lastT ? Math.min(100, t - lastT) : 0; lastT = t;
     const tg = targets(t);
+    let lvl = 0; for (let i = 0; i < BARS; i++) lvl += tg[i]; lvl /= BARS;
+    if (audioLive) {
+      idleMs = lvl < 0.012 ? idleMs + dt : 0;
+      hotMs = (playHere && lvl > 0.85) ? hotMs + dt : 0;
+      if (hotMs > 1500) { playHere = false; store.set("playhere", "0"); applyOut(); syncUI(); hotMs = 0; alert("Detecté un posible eco y apagué «Sonido en esta pestaña»."); }
+    }
+    current.paused = audioLive && idleMs > 2500;
+    if (current.id && !current.paused) current.elapsed += dt;
     for (let i = 0; i < BARS; i++) bars[i] = Math.max(tg[i], bars[i] * 0.88);
 
     let b = 0; for (let i = 0; i < 6; i++) b += bars[i];
@@ -466,12 +526,11 @@
     bass += (b - bass) * (b > bass ? 0.55 : 0.12);
     document.documentElement.style.setProperty("--bass", bass.toFixed(3));
 
-    // progreso interpolado
     if (current.id) {
-      const pos = Math.min(current.duration, current.progress + (current.playing ? performance.now() - current.stamp : 0));
-      $("fill").style.width = (pos / current.duration * 100).toFixed(2) + "%";
-      $("tNow").textContent = fmt(pos);
-      $("tEnd").textContent = fmt(current.duration);
+      const dur = current.duration, el = dur ? current.elapsed % dur : current.elapsed;
+      $("fill").style.width = dur ? (el / dur * 100).toFixed(2) + "%" : "0%";
+      $("tNow").textContent = (current.approx ? "≈ " : "") + fmt(el) + (current.paused ? "  ⏸" : "");
+      $("tEnd").textContent = dur ? fmt(dur) : "—";
     }
 
     ctx.clearRect(0, 0, W, H);
@@ -488,13 +547,42 @@
       ctx.roundRect(x, H - h, bw, h, Math.min(bw / 2, 6));
       ctx.fill();
     }
+    // anillo alrededor de la portada
+    const cw = $("coverWrap").clientWidth, rs = Math.round(cw * 1.4), ring = $("ring");
+    if (ring.width !== rs) ring.width = ring.height = rs;
+    const rc = ring.getContext("2d"), c0 = rs / 2, r0 = cw / 2 + 6, N2 = 96;
+    rc.clearRect(0, 0, rs, rs);
+    rc.strokeStyle = `hsla(${accentH}, 90%, 68%, .9)`; rc.lineWidth = Math.max(2, cw / 90); rc.lineCap = "round";
+    for (let k = 0; k < N2; k++) {
+      const i = Math.floor((k < N2 / 2 ? k : N2 - 1 - k) / (N2 / 2) * BARS * 0.75);
+      const len = 3 + Math.min(1, bars[i]) * cw * 0.17, a = k / N2 * Math.PI * 2 - Math.PI / 2;
+      rc.beginPath(); rc.moveTo(c0 + Math.cos(a) * r0, c0 + Math.sin(a) * r0);
+      rc.lineTo(c0 + Math.cos(a) * (r0 + len), c0 + Math.sin(a) * (r0 + len)); rc.stroke();
+    }
+    // osciloscopio
+    const sc = $("scope"), sx = sc.getContext("2d"), sw = sc.width, sh = sc.height;
+    sx.clearRect(0, 0, sw, sh); sx.strokeStyle = `hsla(${accentH}, 90%, 68%, .85)`; sx.lineWidth = 2; sx.beginPath();
+    if (audioLive && analyser && current.playing) analyser.getByteTimeDomainData(tdata);
+    for (let x = 0; x < sw; x += 4) {
+      let v = 0;
+      if (current.playing) v = (audioLive && tdata) ? (tdata[Math.floor(x / sw * tdata.length)] - 128) / 128
+        : Math.sin(x / 18 + t / 140) * Math.sin(x / 70 + t / 600) * (.25 + bass * .75);
+      const y = sh / 2 + v * sh * 0.45;
+      if (x) sx.lineTo(x, y); else sx.moveTo(x, y);
+    }
+    sx.stroke();
+    // reloj y contador
+    $("clock").textContent = new Date().toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" })
+      + (sessionCount ? " · " + sessionCount + (sessionCount === 1 ? " canción" : " canciones") : "");
     requestAnimationFrame(draw);
   }
   requestAnimationFrame(draw);
 
   /* =====================  UI: controles que se ocultan solos  ===================== */
   let hideTimer;
-  function wake() {
+  let locked = store.get("locked") === "1";
+  function wake(fromKey) {
+    if (locked && !fromKey) return;
     document.body.classList.add("show-ui");
     document.body.classList.remove("idle-cursor");
     clearTimeout(hideTimer);
@@ -502,24 +590,40 @@
       if ($("setup").classList.contains("show")) return;
       document.body.classList.remove("show-ui");
       document.body.classList.add("idle-cursor");
-    }, 3000);
+    }, locked ? 5000 : 3000);
   }
-  addEventListener("mousemove", wake);
+  addEventListener("mousemove", () => wake());
   addEventListener("keydown", e => {
-    wake();
-    if (e.key === "f" || e.key === "F") toggleFs();
+    wake(true);
+    if (e.target.tagName === "INPUT") return;
+    const k = e.key.toLowerCase();
+    if (k === "f") toggleFs();
+    if (k === "r") { current.elapsed = 0; current.approx = false; }
   });
   function toggleFs() {
     if (document.fullscreenElement) document.exitFullscreen();
     else document.documentElement.requestFullscreen().catch(() => {});
   }
   $("btnFs").onclick = toggleFs;
+  const syncUI = () => {
+    $("btnLock").textContent = locked ? "Desbloquear controles" : "Ocultar controles";
+    $("btnPlay").textContent = "Sonido en esta pestaña: " + (playHere ? "sí" : "no");
+  };
+  $("btnLock").onclick = () => {
+    locked = !locked; store.set("locked", locked ? "1" : "0"); syncUI();
+    if (locked) { document.body.classList.remove("show-ui"); document.body.classList.add("idle-cursor"); } else wake();
+  };
+  $("btnPlay").onclick = () => { playHere = !playHere; store.set("playhere", playHere ? "1" : "0"); applyOut(); syncUI(); };
+  $("vol").oninput = applyOut;
+  $("btnPop").onclick = () => window.open(location.href.split("#")[0], "overlay_win", "popup=yes,width=1280,height=720");
+  syncUI();
   $("btnOut").onclick = logout;
   $("connect").onclick = saveAndStart;
   $("lfKey").addEventListener("keydown", e => { if (e.key === "Enter") saveAndStart(); });
 
   /* =====================  Arranque  ===================== */
   applyPalette(null, "inicio");
+  if (locked) { document.body.classList.remove("show-ui"); document.body.classList.add("idle-cursor"); }
   if (!store.get("lf_user") || !store.get("lf_key")) $("setup").classList.add("show");
   else begin();
 })();
