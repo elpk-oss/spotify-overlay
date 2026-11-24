@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Now Playing</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,700;12..96,800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --c1: #2a1740;
+    --c2: #0d1226;
+    --accent-h: 280;
+    --accent: hsl(280 85% 65%);
+    --bass: 0;
+    --font: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; background: #050507; color: #f4f2f7; font-family: var(--font); }
+  body.idle-cursor { cursor: none; }
+
+  /* ---------- Fondo degradado oscuro (dos capas para hacer crossfade) ---------- */
+  .bg { position: fixed; inset: 0; opacity: 0; transition: opacity 1.8s ease; }
+  .bg.on { opacity: 1; }
+  #pulse {
+    position: fixed; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse 70% 60% at 25% 55%, hsl(var(--accent-h) 90% 55% / .55), transparent 70%);
+    opacity: calc(.10 + var(--bass) * .45);
+    mix-blend-mode: screen;
+  }
+  #grain {
+    position: fixed; inset: 0; pointer-events: none; opacity: .07; mix-blend-mode: overlay;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+  }
+  #viz { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+
+  /* ---------- Escena principal ---------- */
+  #stage {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    gap: clamp(28px, 5vw, 80px); padding: 6vh 7vw 18vh;
+    transition: opacity .8s ease, transform .8s ease;
+  }
+  #stage.hidden { opacity: 0; transform: translateY(12px); }
+  #coverWrap { position: relative; flex: 0 0 auto; width: min(38vw, 52vh); aspect-ratio: 1; }
+  #cover {
+    width: 100%; height: 100%; border-radius: 14px; object-fit: cover; display: block;
+    background: #14141c;
+    transform: scale(calc(1 + var(--bass) * .045));
+    box-shadow: 0 30px 80px -20px #000, 0 0 calc(30px + var(--bass) * 130px) calc(var(--bass) * 24px) hsl(var(--accent-h) 90% 60% / calc(.18 + var(--bass) * .5));
+    transition: box-shadow .08s linear;
+  }
+  #cover.swap { animation: coverIn .9s cubic-bezier(.2,.8,.2,1); }
+  @keyframes coverIn { from { opacity: 0; transform: scale(.94) rotate(-1.5deg); } to { opacity: 1; } }
+
+  #info { min-width: 0; max-width: 44vw; }
+  #title {
+    font-weight: 800; font-size: clamp(30px, 5.2vw, 84px); line-height: 1.02; letter-spacing: -.025em;
+    text-wrap: balance; overflow-wrap: anywhere;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  #artist { margin-top: .9vh; font-weight: 400; font-size: clamp(18px, 2.4vw, 38px); color: hsl(var(--accent-h) 70% 80%); letter-spacing: -.01em; }
+  #album { margin-top: .6vh; font-size: clamp(13px, 1.2vw, 20px); color: #ffffff80; }
+  #info.swap > * { animation: textIn .8s cubic-bezier(.2,.8,.2,1) both; }
+  #info.swap #artist { animation-delay: .08s; }
+  #info.swap #album { animation-delay: .16s; }
+  @keyframes textIn { from { opacity: 0; transform: translateX(-14px); } to { opacity: 1; transform: none; } }
+
+  #progress { margin-top: clamp(22px, 4vh, 48px); max-width: 520px; }
+  #bar { height: 5px; border-radius: 5px; background: #ffffff1f; overflow: hidden; }
+  #fill { height: 100%; width: 0; background: var(--accent); border-radius: 5px; box-shadow: 0 0 14px var(--accent); }
+  #times { display: flex; justify-content: space-between; margin-top: 8px; font-size: 13px; color: #ffffff70; font-variant-numeric: tabular-nums; }
+
+  /* ---------- Estado vacío ---------- */
+  #empty {
+    position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+    text-align: center; opacity: 0; pointer-events: none; transition: opacity .8s ease; padding-bottom: 14vh;
+  }
+  #empty.show { opacity: 1; }
+  #empty h2 { font-size: clamp(26px, 4vw, 56px); font-weight: 700; letter-spacing: -.02em; }
+  #empty p { color: #ffffff80; font-size: clamp(14px, 1.4vw, 22px); }
+
+  /* ---------- Panel de configuración ---------- */
+  #setup {
+    position: fixed; inset: 0; display: none; align-items: center; justify-content: center; background: #050507e6; z-index: 20; padding: 20px;
+  }
+  #setup.show { display: flex; }
+  .panel { width: min(560px, 100%); background: #101018; border: 1px solid #ffffff1a; border-radius: 16px; padding: 28px; }
+  .panel h1 { font-size: 26px; letter-spacing: -.02em; margin-bottom: 6px; }
+  .panel p, .panel li { color: #ffffffa8; font-size: 14.5px; line-height: 1.55; }
+  .panel ol { margin: 14px 0 18px 20px; display: grid; gap: 6px; }
+  .panel code { background: #ffffff14; padding: 2px 6px; border-radius: 5px; font-size: 13px; color: #fff; user-select: all; word-break: break-all; }
+  .panel label { display: block; font-size: 13.5px; margin: 14px 0 6px; color: #fff; }
+  .panel input { width: 100%; padding: 11px 13px; border-radius: 9px; border: 1px solid #ffffff2a; background: #0a0a10; color: #fff; font: inherit; font-size: 15px; }
+  .panel input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .btn {
+    font: inherit; font-weight: 700; font-size: 15px; cursor: pointer; border: 0; border-radius: 999px;
+    padding: 12px 22px; background: #fff; color: #0a0a10; margin-top: 18px;
+  }
+  .btn.ghost { background: #ffffff14; color: #fff; margin-top: 0; font-weight: 500; font-size: 13.5px; padding: 9px 15px; border: 1px solid #ffffff1f; backdrop-filter: blur(10px); }
+  .btn.ghost:hover { background: #ffffff26; }
+  #err { color: #ff8a8a; font-size: 13.5px; margin-top: 12px; min-height: 1em; }
+
+  /* ---------- Controles (se ocultan solos para el stream) ---------- */
+  #controls {
+    position: fixed; left: 0; right: 0; bottom: 0; padding: 18px 22px; display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
+    background: linear-gradient(transparent, #000000b0); z-index: 10; opacity: 0; transition: opacity .35s ease; pointer-events: none;
+  }
+  body.show-ui #controls { opacity: 1; pointer-events: auto; }
+  #mode { margin-left: auto; font-size: 13px; color: #ffffffa0; }
+
+  @media (max-width: 760px) {
+    #stage { flex-direction: column; text-align: center; padding: 5vh 6vw 20vh; }
+    #coverWrap { width: min(70vw, 40vh); }
+    #info { max-width: 100%; }
+    #progress { margin-inline: auto; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #cover.swap, #info.swap > * { animation: none; }
+  }
+</style>
+</head>
+<body class="show-ui">
+
+<div class="bg" id="bgA"></div>
+<div class="bg" id="bgB"></div>
+<div id="pulse"></div>
+<canvas id="viz"></canvas>
+<div id="grain"></div>
+
+<main id="stage" class="hidden">
+  <div id="coverWrap"><img id="cover" alt="Portada del álbum" crossorigin="anonymous"></div>
+  <div id="info">
+    <h1 id="title"></h1>
+    <p id="artist"></p>
+    <p id="album"></p>
+    <div id="progress">
+      <div id="bar"><div id="fill"></div></div>
+      <div id="times"><span id="tNow">0:00</span><span id="tEnd">0:00</span></div>
+    </div>
+  </div>
+</main>
+
+<div id="empty">
+  <h2 id="emptyTitle">Nada sonando</h2>
+  <p id="emptySub">Dale play en Spotify y el overlay aparece solo.</p>
+</div>
+
+<div id="setup">
+  <div class="panel">
+    <h1>Conectar con Spotify</h1>
+    <p>Solo se hace una vez. Los datos se quedan en tu navegador.</p>
+    <ol>
+      <li>Entra a <code>developer.spotify.com/dashboard</code> y crea una app.</li>
+      <li>En <b>Redirect URIs</b> agrega exactamente: <code id="redirectShow"></code></li>
+      <li>Marca <b>Web API</b>, guarda y copia el <b>Client ID</b>.</li>
+    </ol>
+    <label for="clientId">Client ID</label>
+    <input id="clientId" type="text" autocomplete="off" spellcheck="false" placeholder="Pega aquí tu Client ID">
+    <p id="err"></p>
+    <button class="btn" id="connect">Conectar con Spotify</button>
+  </div>
+</div>
+
+<div id="controls">
+  <button class="btn ghost" id="btnSys">Reaccionar al audio de la pantalla</button>
+  <button class="btn ghost" id="btnMic">Usar micrófono / mezcla estéreo</button>
+  <button class="btn ghost" id="btnFs">Pantalla completa (F)</button>
+  <button class="btn ghost" id="btnOut">Cerrar sesión</button>
+  <span id="mode">Visualizador: simulado</span>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  /* =====================  Configuración y auth (PKCE)  ===================== */
+  const SCOPES = "user-read-currently-playing user-read-playback-state";
+  const REDIRECT = location.origin + location.pathname;
+  const $ = id => document.getElementById(id);
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+    del(k) { try { localStorage.removeItem(k); } catch {} }
+  };
+
+  $("redirectShow").textContent = REDIRECT;
+  $("clientId").value = store.get("so_client") || "";
+
+  const b64url = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const randomStr = n => b64url(crypto.getRandomValues(new Uint8Array(n)));
+
+  async function startLogin() {
+    if (location.protocol === "file:") {
+      $("err").textContent = "Abriste el archivo directo. Ejecuta un servidor local y entra por http://127.0.0.1:8888/spotify-overlay.html";
+      return;
+    }
+    const cid = $("clientId").value.trim();
+    if (!cid) { $("err").textContent = "Falta el Client ID."; return; }
+    if (!crypto.subtle) { $("err").textContent = "Abre esta página desde http://127.0.0.1 (no desde un archivo)."; return; }
+    store.set("so_client", cid);
+    const verifier = randomStr(64);
+    store.set("so_verifier", verifier);
+    const challenge = b64url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
+    const p = new URLSearchParams({
+      client_id: cid, response_type: "code", redirect_uri: REDIRECT,
+      scope: SCOPES, code_challenge_method: "S256", code_challenge: challenge
+    });
+    location.href = "https://accounts.spotify.com/authorize?" + p;
+  }
+
+  async function tokenRequest(params) {
+    const r = await fetch("https://accounts.spotify.com/api/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ client_id: store.get("so_client"), ...params })
+    });
+    if (!r.ok) throw new Error("token " + r.status);
+    const j = await r.json();
+    store.set("so_access", j.access_token);
+    store.set("so_expires", String(Date.now() + (j.expires_in - 60) * 1000));
+    if (j.refresh_token) store.set("so_refresh", j.refresh_token);
+  }
+
+  async function getToken() {
+    if (Number(store.get("so_expires") || 0) > Date.now() && store.get("so_access")) return store.get("so_access");
+    const rt = store.get("so_refresh");
+    if (!rt) throw new Error("sin sesión");
+    await tokenRequest({ grant_type: "refresh_token", refresh_token: rt });
+    return store.get("so_access");
+  }
+
+  function logout() {
+    ["so_access", "so_refresh", "so_expires", "so_verifier"].forEach(store.del);
+    location.href = REDIRECT;
+  }
+
+  async function handleRedirect() {
+    const q = new URLSearchParams(location.search);
+    if (q.get("error")) { history.replaceState({}, "", REDIRECT); $("setup").classList.add("show"); $("err").textContent = "Spotify rechazó el acceso: " + q.get("error"); return false; }
+    const code = q.get("code");
+    if (!code) return true;
+    history.replaceState({}, "", REDIRECT);
+    try {
+      await tokenRequest({ grant_type: "authorization_code", code, redirect_uri: REDIRECT, code_verifier: store.get("so_verifier") });
+      return true;
+    } catch (e) {
+      $("setup").classList.add("show");
+      $("err").textContent = "No se pudo conectar. Revisa el Client ID y el Redirect URI.";
+      return false;
+    }
+  }
+
+  /* =====================  Colores desde la portada  ===================== */
+  const rgb2hsl = (r, g, b) => {
+    r /= 255; g /= 255; b /= 255;
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2;
+    let h = 0, s = 0;
+    if (mx !== mn) {
+      const d = mx - mn;
+      s = l > .5 ? d / (2 - mx - mn) : d / (mx + mn);
+      h = mx === r ? (g - b) / d + (g < b ? 6 : 0) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+      h *= 60;
+    }
+    return [h, s, l];
+  };
+
+  function extractColors(img) {
+    const N = 40, c = document.createElement("canvas");
+    c.width = c.height = N;
+    const x = c.getContext("2d", { willReadFrequently: true });
+    x.drawImage(img, 0, 0, N, N);
+    const d = x.getImageData(0, 0, N, N).data;
+    const buckets = {};
+    for (let i = 0; i < d.length; i += 4) {
+      const r = d[i], g = d[i + 1], b = d[i + 2];
+      const [, s, l] = rgb2hsl(r, g, b);
+      if (l < .08 || l > .95) continue;
+      const key = (r >> 5) << 6 | (g >> 5) << 3 | (b >> 5);
+      const w = 1 + s * 3;
+      const k = buckets[key] || (buckets[key] = { r: 0, g: 0, b: 0, w: 0 });
+      k.r += r * w; k.g += g * w; k.b += b * w; k.w += w;
+    }
+    const list = Object.values(buckets).sort((a, b) => b.w - a.w).map(k => {
+      const [h, s, l] = rgb2hsl(k.r / k.w, k.g / k.w, k.b / k.w);
+      return { h, s, l, w: k.w };
+    });
+    if (!list.length) return null;
+    const first = list[0];
+    const hueDist = (a, b) => Math.min(Math.abs(a - b), 360 - Math.abs(a - b));
+    const second = list.find(k => hueDist(k.h, first.h) > 35) || list[1] || first;
+    return [first, second];
+  }
+
+  function hashHue(str) { let h = 0; for (const ch of str) h = (h * 31 + ch.charCodeAt(0)) % 360; return h; }
+
+  let bgFlip = false;
+  function applyPalette(p, seed) {
+    const a = p ? p[0] : { h: hashHue(seed || "x"), s: .6 };
+    const b = p ? p[1] : { h: (a.h + 40) % 360, s: .5 };
+    const c1 = `hsl(${a.h.toFixed(0)} ${Math.min(75, 25 + a.s * 55).toFixed(0)}% 19%)`;
+    const c2 = `hsl(${b.h.toFixed(0)} ${Math.min(65, 20 + b.s * 45).toFixed(0)}% 9%)`;
+    const root = document.documentElement.style;
+    root.setProperty("--accent-h", a.h.toFixed(0));
+    root.setProperty("--accent", `hsl(${a.h.toFixed(0)} 85% 64%)`);
+    const next = $(bgFlip ? "bgA" : "bgB"), prev = $(bgFlip ? "bgB" : "bgA");
+    next.style.background = `radial-gradient(ellipse at 20% 30%, ${c1}, transparent 65%), linear-gradient(135deg, ${c1} 0%, ${c2} 55%, #040406 100%)`;
+    next.classList.add("on"); prev.classList.remove("on");
+    bgFlip = !bgFlip;
+  }
+
+  /* =====================  Spotify: canción actual  ===================== */
+  let current = { id: null, playing: false, progress: 0, duration: 1, stamp: 0 };
+  const fmt = ms => { const s = Math.max(0, Math.floor(ms / 1000)); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); };
+
+  function showEmpty(title, sub) {
+    $("stage").classList.add("hidden");
+    $("emptyTitle").textContent = title;
+    $("emptySub").textContent = sub;
+    $("empty").classList.add("show");
+    current.playing = false;
+  }
+
+  function showTrack(item, isPlaying, progress, typeLabel) {
+    const id = item.id || item.uri || item.name;
+    const isEpisode = item.type === "episode";
+    const images = isEpisode ? item.images : item.album.images;
+    const art = images && images[0] ? images[0].url : "";
+    const artist = isEpisode ? item.show.name : item.artists.map(a => a.name).join(", ");
+    const album = isEpisode ? "Podcast" : item.album.name;
+
+    $("empty").classList.remove("show");
+    $("stage").classList.remove("hidden");
+
+    if (id !== current.id) {
+      current.id = id;
+      $("title").textContent = item.name;
+      $("artist").textContent = artist;
+      $("album").textContent = album;
+      document.title = item.name + " · " + artist;
+      const cover = $("cover"), info = $("info");
+      cover.classList.remove("swap"); info.classList.remove("swap");
+      void cover.offsetWidth;
+      cover.classList.add("swap"); info.classList.add("swap");
+      cover.onload = () => {
+        let p = null;
+        try { p = extractColors(cover); } catch (e) { /* sin CORS: usamos color por hash */ }
+        applyPalette(p, id);
+      };
+      cover.onerror = () => applyPalette(null, id);
+      if (art) cover.src = art; else { cover.removeAttribute("src"); applyPalette(null, id); }
+    }
+    current.playing = isPlaying;
+    current.progress = progress || 0;
+    current.duration = item.duration_ms || 1;
+    current.stamp = performance.now();
+  }
+
+  async function poll() {
+    let wait = 2500;
+    try {
+      const t = await getToken();
+      const r = await fetch("https://api.spotify.com/v1/me/player/currently-playing?additional_types=episode", {
+        headers: { Authorization: "Bearer " + t }
+      });
+      if (r.status === 204) {
+        current.id = null;
+        showEmpty("Nada sonando", "Dale play en Spotify y el overlay aparece solo.");
+      } else if (r.status === 429) {
+        wait = (Number(r.headers.get("Retry-After")) || 5) * 1000;
+      } else if (r.status === 401) {
+        store.del("so_expires");
+      } else if (r.ok) {
+        const j = await r.json();
+        if (j.currently_playing_type === "ad") {
+          current.id = null;
+          showEmpty("Publicidad", "Spotify está en pausa comercial.");
+        } else if (j.item) {
+          showTrack(j.item, j.is_playing, j.progress_ms);
+        } else {
+          showEmpty("Nada sonando", "Dale play en Spotify y el overlay aparece solo.");
+        }
+      }
+    } catch (e) {
+      if (!store.get("so_refresh")) { $("setup").classList.add("show"); return; }
+      wait = 6000;
+    }
+    setTimeout(poll, wait);
+  }
+
+  /* =====================  Audio real (opcional)  ===================== */
+  let audioCtx = null, analyser = null, freqData = null, audioLive = false, activeStream = null;
+
+  async function useStream(stream, label) {
+    if (!stream.getAudioTracks().length) {
+      stream.getTracks().forEach(t => t.stop());
+      alert("No llegó audio. En el selector marca «Compartir audio del sistema» (elige «Pantalla completa») o la opción de audio de pestaña.");
+      return;
+    }
+    if (activeStream) activeStream.getTracks().forEach(t => t.stop());
+    stream.getVideoTracks().forEach(t => t.stop());
+    activeStream = stream;
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") await audioCtx.resume();
+    const src = audioCtx.createMediaStreamSource(new MediaStream(stream.getAudioTracks()));
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = 0.78;
+    src.connect(analyser); // no se conecta a destination: así no hay eco
+    freqData = new Uint8Array(analyser.frequencyBinCount);
+    audioLive = true;
+    $("mode").textContent = "Visualizador: " + label;
+    stream.getAudioTracks()[0].addEventListener("ended", () => { audioLive = false; $("mode").textContent = "Visualizador: simulado"; });
+  }
+
+  $("btnSys").onclick = async () => {
+    try {
+      const s = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+      await useStream(s, "audio real (sistema)");
+    } catch (e) { /* cancelado */ }
+  };
+  $("btnMic").onclick = async () => {
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+      await useStream(s, "audio real (entrada)");
+    } catch (e) { alert("No se pudo acceder a la entrada de audio."); }
+  };
+
+  /* =====================  Visualizador  ===================== */
+  const canvas = $("viz"), ctx = canvas.getContext("2d");
+  const BARS = 72;
+  const bars = new Float32Array(BARS);
+  let W = 0, H = 0, dpr = 1, bass = 0;
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = innerWidth; H = innerHeight;
+    canvas.width = W * dpr; canvas.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  addEventListener("resize", resize); resize();
+
+  function targets(t) {
+    const out = new Float32Array(BARS);
+    if (!current.playing) return out;
+    if (audioLive && analyser) {
+      analyser.getByteFrequencyData(freqData);
+      const usable = Math.floor(freqData.length * 0.55);
+      for (let i = 0; i < BARS; i++) {
+        const a = Math.floor(Math.pow(i / BARS, 2.1) * usable) + 1;
+        const b = Math.max(a + 1, Math.floor(Math.pow((i + 1) / BARS, 2.1) * usable) + 1);
+        let sum = 0;
+        for (let k = a; k < b; k++) sum += freqData[k];
+        const v = sum / (b - a) / 255;
+        out[i] = Math.pow(v, 1.5) * (1 + i / BARS * 0.6);
+      }
+    } else {
+      // Modo simulado: latido a ~100 BPM + oleaje suave
+      const beat = (t / 1000 * 100 / 60) % 1;
+      const kick = Math.exp(-beat * 5);
+      for (let i = 0; i < BARS; i++) {
+        const x = i / BARS;
+        const wave = .5 + .5 * Math.sin(t / 380 + i * .45) * Math.sin(t / 900 + i * .13);
+        out[i] = .06 + kick * .6 * Math.pow(1 - x, 1.6) + wave * .32 * (x + .2);
+      }
+    }
+    return out;
+  }
+
+  function draw(t) {
+    const tg = targets(t);
+    for (let i = 0; i < BARS; i++) bars[i] = Math.max(tg[i], bars[i] * 0.88);
+
+    let b = 0; for (let i = 0; i < 6; i++) b += bars[i];
+    b = Math.min(1, b / 6 * 1.25);
+    bass += (b - bass) * (b > bass ? 0.55 : 0.12);
+    document.documentElement.style.setProperty("--bass", bass.toFixed(3));
+
+    // progreso interpolado
+    if (current.id) {
+      const pos = Math.min(current.duration, current.progress + (current.playing ? performance.now() - current.stamp : 0));
+      $("fill").style.width = (pos / current.duration * 100).toFixed(2) + "%";
+      $("tNow").textContent = fmt(pos);
+      $("tEnd").textContent = fmt(current.duration);
+    }
+
+    ctx.clearRect(0, 0, W, H);
+    const accentH = getComputedStyle(document.documentElement).getPropertyValue("--accent-h").trim() || "280";
+    const gap = 5, bw = (W - gap * (BARS + 1)) / BARS, maxH = H * 0.34;
+    const grad = ctx.createLinearGradient(0, H, 0, H - maxH);
+    grad.addColorStop(0, `hsla(${accentH}, 90%, 62%, .85)`);
+    grad.addColorStop(1, `hsla(${(+accentH + 40) % 360}, 90%, 70%, 0)`);
+    ctx.fillStyle = grad;
+    for (let i = 0; i < BARS; i++) {
+      const h = Math.max(3, Math.min(1, bars[i]) * maxH);
+      const x = gap + i * (bw + gap);
+      ctx.beginPath();
+      ctx.roundRect(x, H - h, bw, h, Math.min(bw / 2, 6));
+      ctx.fill();
+    }
+    requestAnimationFrame(draw);
+  }
+  requestAnimationFrame(draw);
+
+  /* =====================  UI: controles que se ocultan solos  ===================== */
+  let hideTimer;
+  function wake() {
+    document.body.classList.add("show-ui");
+    document.body.classList.remove("idle-cursor");
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(() => {
+      if $("setup").classList.contains("show") return;
+      document.body.classList.remove("show-ui");
+      document.body.classList.add("idle-cursor");
+    }, 3000);
+  }
+  addEventListener("mousemove", wake);
+  addEventListener("keydown", e => {
+    wake();
+    if (e.key === "f" || e.key === "F") toggleFs();
+  });
+  function toggleFs() {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen().catch(() => {});
+  }
+  $("btnFs").onclick = toggleFs;
+  $("btnOut").onclick = logout;
+  $("connect").onclick = startLogin;
+  $("clientId").addEventListener("keydown", e => { if (e.key === "Enter") startLogin(); });
+
+  /* =====================  Arranque  ===================== */
+  (async () => {
+    applyPalette(null, "inicio");
+    if (location.protocol === "file:") {
+      $("setup").classList.add("show");
+      $("redirectShow").textContent = "http://127.0.0.1:8888/spotify-overlay.html";
+      $("err").textContent = "Estás abriendo el archivo directo. Ejecuta un servidor local (ver instrucciones) y entra por esa dirección.";
+      return;
+    }
+    const ok = await handleRedirect();
+    if (!ok) return;
+    if (!store.get("so_refresh") && !store.get("so_access")) { $("setup").classList.add("show"); return; }
+    showEmpty("Conectado", "Esperando a que suene algo en Spotify…");
+    poll();
+    wake();
+  })();
+})();
+</script>
+</body>
+</html>
