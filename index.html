@@ -14,6 +14,7 @@
     --accent-h: 280;
     --accent: hsl(280 85% 65%);
     --bass: 0;
+    --kick: 0;
     --font: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -26,7 +27,7 @@
   #pulse {
     position: fixed; inset: 0; pointer-events: none;
     background: radial-gradient(ellipse 70% 60% at 25% 55%, hsl(var(--accent-h) 90% 55% / .55), transparent 70%);
-    opacity: calc(.10 + var(--bass) * .45);
+    opacity: calc(.10 + var(--bass) * .45 + var(--kick) * .4);
     mix-blend-mode: screen;
   }
   #grain {
@@ -46,7 +47,7 @@
   #cover {
     width: 100%; height: 100%; border-radius: 14px; object-fit: cover; display: block;
     background: #14141c;
-    transform: scale(calc(1 + var(--bass) * .045));
+    transform: scale(calc(1 + var(--bass) * .045 + var(--kick) * .06));
     box-shadow: 0 30px 80px -20px #000, 0 0 calc(30px + var(--bass) * 130px) calc(var(--bass) * 24px) hsl(var(--accent-h) 90% 60% / calc(.18 + var(--bass) * .5));
     transition: box-shadow .08s linear;
   }
@@ -79,7 +80,8 @@
   #stats, #prev { margin-top: 10px; font-size: clamp(12px, 1.05vw, 16px); color: #ffffff8c; }
   #prev { color: #ffffff60; }
   #clock { position: fixed; top: 18px; right: 24px; font-size: 15px; color: #ffffff80; font-variant-numeric: tabular-nums; z-index: 2; }
-  #vol { width: 90px; accent-color: var(--accent); }
+  #vol, #sens { width: 90px; accent-color: var(--accent); }
+  .lab { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #ffffffa0; }
 
   /* ---------- Estado vacío ---------- */
   #empty {
@@ -183,7 +185,8 @@
   <button class="btn ghost" id="btnSys">Capturar audio (pestaña o pantalla)</button>
   <button class="btn ghost" id="btnMic">Usar micrófono / mezcla estéreo</button>
   <button class="btn ghost" id="btnPlay">Sonido en esta pestaña: no</button>
-  <input type="range" id="vol" min="0" max="100" value="80" aria-label="Volumen de la pestaña">
+  <label class="lab">Volumen <input type="range" id="vol" min="0" max="100" value="80"></label>
+  <label class="lab">Sensibilidad <input type="range" id="sens" min="60" max="250" value="130"></label>
   <button class="btn ghost" id="btnPop">Ventana aparte</button>
   <button class="btn ghost" id="btnLock">Ocultar controles</button>
   <button class="btn ghost" id="btnFs">Pantalla completa (F)</button>
@@ -372,7 +375,7 @@
       current.duration = Number(tk.duration) || 0;
       const box = $("tags"); box.textContent = "";
       ((tk.toptags && tk.toptags.tag) || []).slice(0, 4).forEach(x => { const sp = document.createElement("span"); sp.textContent = x.name; box.appendChild(sp); });
-      $("stats").textContent = [tk.userloved === "1" ? "♥ Favorita" : "", tk.userplaycount ? "Veces oida: " + n(tk.userplaycount) : "",
+      $("stats").textContent = [tk.userloved === "1" ? "♥ Favorita" : "", tk.userplaycount ? "Tus escuchas: " + n(tk.userplaycount) : "",
         tk.listeners ? "Oyentes: " + n(tk.listeners) : "", tk.playcount ? "Reproducciones: " + n(tk.playcount) : ""].filter(Boolean).join(" · ");
       if (!$("album").textContent && tk.album && tk.album.title) $("album").textContent = tk.album.title;
     } catch (e) { /* sin info extra */ }
@@ -437,14 +440,14 @@
       return;
     }
     if (activeStream) activeStream.getTracks().forEach(t => t.stop());
-    stream.getVideoTracks().forEach(t => t.stop());
+    stream.getVideoTracks().forEach(vt => vt.applyConstraints({ frameRate: 1 }).catch(() => {}));
     activeStream = stream;
     audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === "suspended") await audioCtx.resume();
     const src = audioCtx.createMediaStreamSource(new MediaStream(stream.getAudioTracks()));
     analyser = audioCtx.createAnalyser();
     analyser.fftSize = 2048;
-    analyser.smoothingTimeConstant = 0.78;
+    analyser.smoothingTimeConstant = 0.55;
     src.connect(analyser);
     outGain = audioCtx.createGain(); src.connect(outGain); applyOut();
     tdata = new Uint8Array(analyser.fftSize);
@@ -471,7 +474,8 @@
   const canvas = $("viz"), ctx = canvas.getContext("2d");
   const BARS = 72;
   const bars = new Float32Array(BARS);
-  let W = 0, H = 0, dpr = 1, bass = 0, lastT = 0, idleMs = 0, hotMs = 0;
+  let W = 0, H = 0, dpr = 1, bass = 0, lastT = 0, idleMs = 0, hotMs = 0, modeTick = 0, loAvg = 0, lastBeat = 0, kick = 0, peakAll = 0.1;
+  const waves = [];
 
   function resize() {
     dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -483,28 +487,24 @@
 
   function targets(t) {
     const out = new Float32Array(BARS);
-    if (!current.playing) return out;
-    if (audioLive && analyser) {
-      analyser.getByteFrequencyData(freqData);
-      const usable = Math.floor(freqData.length * 0.55);
-      for (let i = 0; i < BARS; i++) {
-        const a = Math.floor(Math.pow(i / BARS, 2.1) * usable) + 1;
-        const b = Math.max(a + 1, Math.floor(Math.pow((i + 1) / BARS, 2.1) * usable) + 1);
-        let sum = 0;
-        for (let k = a; k < b; k++) sum += freqData[k];
-        const v = sum / (b - a) / 255;
-        out[i] = Math.pow(v, 1.5) * (1 + i / BARS * 0.6);
-      }
-    } else {
-      // Modo simulado: latido a ~100 BPM + oleaje suave
-      const beat = (t / 1000 * 100 / 60) % 1;
-      const kick = Math.exp(-beat * 5);
-      for (let i = 0; i < BARS; i++) {
-        const x = i / BARS;
-        const wave = .5 + .5 * Math.sin(t / 380 + i * .45) * Math.sin(t / 900 + i * .13);
-        out[i] = .06 + kick * .6 * Math.pow(1 - x, 1.6) + wave * .32 * (x + .2);
-      }
+    if (!audioLive || !analyser) return out;
+    analyser.getByteFrequencyData(freqData);
+    const sens = $("sens").value / 100, usable = Math.floor(freqData.length * 0.55);
+    let lo = 0; for (let k = 1; k <= 10; k++) lo += freqData[k]; lo /= 10;
+    if (lo * sens > 45 && lo > loAvg * 1.2 + 4 && t - lastBeat > 170) {
+      lastBeat = t; kick = Math.min(1, (lo - loAvg) / 80 + 0.5);
+      waves.push({ p: 0, s: kick });
     }
+    loAvg = loAvg * 0.95 + lo * 0.05;
+    let pk = 0;
+    for (let i = 0; i < BARS; i++) {
+      const a = Math.floor(Math.pow(i / BARS, 2.1) * usable) + 1;
+      const b = Math.max(a + 1, Math.floor(Math.pow((i + 1) / BARS, 2.1) * usable) + 1);
+      let sum = 0; for (let k = a; k < b; k++) sum += freqData[k];
+      out[i] = sum / (b - a) / 255; pk = Math.max(pk, out[i]);
+    }
+    peakAll = Math.max(pk, peakAll * 0.998, 0.1);
+    for (let i = 0; i < BARS; i++) out[i] = Math.min(1, Math.pow(out[i] / peakAll * sens, 1.6) * (1 + i / BARS * 0.5));
     return out;
   }
 
@@ -525,6 +525,8 @@
     b = Math.min(1, b / 6 * 1.25);
     bass += (b - bass) * (b > bass ? 0.55 : 0.12);
     document.documentElement.style.setProperty("--bass", bass.toFixed(3));
+    kick = Math.max(0, kick - dt / 320);
+    document.documentElement.style.setProperty("--kick", kick.toFixed(3));
 
     if (current.id) {
       const dur = current.duration, el = dur ? current.elapsed % dur : current.elapsed;
@@ -547,6 +549,20 @@
       ctx.roundRect(x, H - h, bw, h, Math.min(bw / 2, 6));
       ctx.fill();
     }
+    // ondas de choque en cada golpe
+    const cr = $("coverWrap").getBoundingClientRect(), wx = cr.left + cr.width / 2, wy = cr.top + cr.height / 2, reach = Math.max(W, H) * 0.65;
+    for (let k = waves.length - 1; k >= 0; k--) {
+      const w = waves[k]; w.p += dt / 1100;
+      if (w.p >= 1) { waves.splice(k, 1); continue; }
+      ctx.strokeStyle = `hsla(${accentH}, 90%, 70%, ${(1 - w.p) * 0.55 * w.s})`;
+      ctx.lineWidth = 1 + 5 * (1 - w.p);
+      ctx.beginPath(); ctx.arc(wx, wy, cr.width / 2 + w.p * reach, 0, Math.PI * 2); ctx.stroke();
+    }
+    const tick = Math.floor(t / 400);
+    if (tick !== modeTick) {
+      modeTick = tick;
+      $("mode").textContent = audioLive ? "Audio real ✓ nivel " + Math.round(lvl * 100) + "%" : "Sin captura de audio: no reacciona";
+    }
     // anillo alrededor de la portada
     const cw = $("coverWrap").clientWidth, rs = Math.round(cw * 1.4), ring = $("ring");
     if (ring.width !== rs) ring.width = ring.height = rs;
@@ -562,11 +578,10 @@
     // osciloscopio
     const sc = $("scope"), sx = sc.getContext("2d"), sw = sc.width, sh = sc.height;
     sx.clearRect(0, 0, sw, sh); sx.strokeStyle = `hsla(${accentH}, 90%, 68%, .85)`; sx.lineWidth = 2; sx.beginPath();
-    if (audioLive && analyser && current.playing) analyser.getByteTimeDomainData(tdata);
+    if (audioLive && analyser) analyser.getByteTimeDomainData(tdata);
     for (let x = 0; x < sw; x += 4) {
       let v = 0;
-      if (current.playing) v = (audioLive && tdata) ? (tdata[Math.floor(x / sw * tdata.length)] - 128) / 128
-        : Math.sin(x / 18 + t / 140) * Math.sin(x / 70 + t / 600) * (.25 + bass * .75);
+      if (audioLive && tdata) v = Math.max(-1, Math.min(1, (tdata[Math.floor(x / sw * tdata.length)] - 128) / 128 * 1.8));
       const y = sh / 2 + v * sh * 0.45;
       if (x) sx.lineTo(x, y); else sx.moveTo(x, y);
     }
