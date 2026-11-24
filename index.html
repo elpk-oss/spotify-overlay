@@ -85,6 +85,7 @@
   #inDev option { color: #000; }
   .lab { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #ffffffa0; }
 
+  #stats { display: none; }
   body.viz-off #viz, body.viz-off #ring, body.viz-off #scope { display: none; }
 
   /* ---------- Estado vacío ---------- */
@@ -186,8 +187,8 @@
 </div>
 
 <div id="controls">
-  <button class="btn ghost" id="btnSys">Capturar pantalla (Spotify app)</button>
-  <button class="btn ghost" id="btnTab">Capturar pestaña (Spotify Web)</button>
+  <button class="btn ghost" id="btnSys">Sonido del PC (parlantes)</button>
+  <button class="btn ghost" id="btnTab">Sonido de una pestaña</button>
   <button class="btn ghost" id="btnMic">Entrada de audio (sin aviso de Chrome)</button>
   <select id="inDev" hidden aria-label="Entrada de audio"></select>
   <button class="btn ghost" id="btnPlay">Sonido en esta pestaña: no</button>
@@ -555,7 +556,7 @@
       if (hotMs > 1500) { playHere = false; store.set("playhere", "0"); applyOut(); syncUI(); hotMs = 0; alert("Detecté un posible eco y apagué «Sonido en esta pestaña»."); }
     }
     current.paused = audioLive && idleMs > 2500;
-    if (current.id && !current.paused) current.elapsed += dt;
+    if (current.id) current.elapsed += dt;
     for (let i = 0; i < BARS; i++) bars[i] = Math.max(tg[i], bars[i] * 0.88);
 
     let b = 0; for (let i = 0; i < 6; i++) b += bars[i];
@@ -566,10 +567,10 @@
     document.documentElement.style.setProperty("--kick", kick.toFixed(3));
 
     if (current.id) {
-      const dur = current.duration, el = dur ? current.elapsed % dur : current.elapsed;
-      $("fill").style.width = dur ? (el / dur * 100).toFixed(2) + "%" : "0%";
-      $("tNow").textContent = (current.approx ? "≈ " : "") + fmt(el) + (current.paused ? "  ⏸" : "");
-      $("tEnd").textContent = dur ? fmt(dur) : "—";
+      const dur = current.duration, el = dur > 30000 ? Math.min(current.elapsed, dur) : current.elapsed;
+      $("fill").style.width = dur > 30000 ? (el / dur * 100).toFixed(2) + "%" : "0%";
+      $("tNow").textContent = (current.approx ? "≈ " : "") + fmt(el) + "";
+      $("tEnd").textContent = dur > 30000 ? fmt(dur) : "—";
     }
 
     ctx.clearRect(0, 0, W, H);
